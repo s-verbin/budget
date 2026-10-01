@@ -31,14 +31,17 @@ REPO_URL = os.environ.get("BUDGET_REPO_URL") or ""
 def inject_footer(html: bytes) -> bytes:
     pieces = []
     if DEMO_MODE:
+        if REPO_URL:
+            call_to_action = '<a href="%s">скачайте проект с GitHub</a> и запустите его у себя.' % REPO_URL
+        else:
+            call_to_action = "скачайте проект и запустите его у себя."
         pieces.append(
             '<div id="demo-banner" role="note">Это публичная песочница: данные может увидеть или изменить '
             "любой посетитель, и база периодически обнуляется. Для своего бюджета — "
-            f'{"<a href=\"" + REPO_URL + "\">скачайте проект с GitHub</a> и запустите его у себя." if REPO_URL else "скачайте проект и запустите его у себя."}'
-            "</div>"
+            + call_to_action + "</div>"
         )
     if REPO_URL:
-        pieces.append(f'<footer id="repo-footer"><a href="{REPO_URL}" target="_blank" rel="noopener">Исходный код на GitHub</a></footer>')
+        pieces.append('<footer id="repo-footer"><a href="%s" target="_blank" rel="noopener">Исходный код на GitHub</a></footer>' % REPO_URL)
     if not pieces:
         return html
     snippet = ("\n".join(pieces)).encode("utf-8")
