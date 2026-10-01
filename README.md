@@ -99,3 +99,7 @@ BUDGET_DEMO=1 BUDGET_REPO_URL=https://github.com/s-verbin/budget python3 server.
 
 - `BUDGET_DEMO=1` — показывает баннер «это песочница».
 - `BUDGET_REPO_URL=...` — добавляет ссылку на репозиторий внизу страницы.
+
+Само по себе демо-обнуление в коде не заложено — за него на проде отвечает systemd-таймер,
+который раз в сутки удаляет файл базы и перезапускает сервис (`budget-reset.timer` /
+`budget-reset.service` на сервере, не в этом репозитории).
