@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Личный бюджет</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Onest:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<datalist id="cat-list"></datalist>
+<main>
+  <header class="top">
+    <h1>Личный бюджет</h1>
+    <span id="saved" class="saved" role="status" aria-live="polite"></span>
+  </header>
+
+  <div class="verdict" id="verdict" aria-live="polite"></div>
+  <div class="alerts" id="alerts"></div>
+
+  <section class="card" id="empty" hidden>
+    <h2>Пока пусто</h2>
+    <p class="hint">Добавьте доходы, расходы, кредиты и вклады ниже или загрузите пример, чтобы посмотреть, как это работает.</p>
+    <div class="actions"><button type="button" id="demo">Загрузить пример</button></div>
+  </section>
+
+  <section class="card" id="setup">
+    <h2>Исходные данные</h2>
+    <div class="setup" id="setup-fields"></div>
+  </section>
+
+  <section class="card">
+    <h2>Остаток на счетах по месяцам</h2>
+    <div class="legend">
+      <span><i class="ln" style="background:var(--a)"></i>Остаток на конец месяца</span>
+      <span><i class="ln dash" style="color:var(--warn)"></i>Резерв</span>
+      <span><i class="bx" style="background:var(--badbg);border-color:var(--bad)"></i>Кассовый разрыв</span>
+    </div>
+    <div class="readout" id="ro">Проведите по графику: покажу цифры месяца.</div>
+    <div class="chartwrap" id="chart"></div>
+    <p class="hint" style="margin:6px 0 0">Деньги на вкладах сюда не входят: у них свой остаток и свой график ниже, в разделе «Вклады».</p>
+  </section>
+
+  <section class="card">
+    <h2>Доходы и расходы по месяцам</h2>
+    <p class="hint tip">Нажмите на месяц, чтобы увидеть, из чего он состоит.</p>
+    <div class="tblwrap"><table class="mtable" id="months"></table></div>
+  </section>
+
+  <section class="card">
+    <div class="ch"><h2>Структура расходов</h2></div>
+    <div class="seg" id="share-mode" role="tablist" aria-label="Период">
+      <button type="button" role="tab" aria-selected="true" data-mode="month">По месяцам</button>
+      <button type="button" role="tab" aria-selected="false" data-mode="year">По годам</button>
+    </div>
+    <div class="readout" id="share-ro">Нажмите на столбец: покажу разбивку.</div>
+    <div class="chartwrap" id="share-chart"></div>
+    <div class="swatches" id="share-legend"></div>
+    <p class="hint" style="margin:8px 0 0">Доля каждой статьи в общих тратах периода: расходы, платежи по кредитам, досрочные погашения, первоначальные взносы и пополнения вкладов. Самые мелкие статьи объединены в «Остальное».</p>
+  </section>
+
+  <details class="card sect" id="sect-loans" open>
+    <summary><h2>Кредиты и ипотека</h2><span class="tot" id="tloan"></span></summary>
+    <div class="sect-body">
+      <div id="lst-loans"></div>
+      <div class="actions"><button type="button" id="add-loan">+ Добавить кредит или ипотеку</button></div>
+    </div>
+  </details>
+
+  <details class="card sect" id="sect-deposits" open>
+    <summary><h2>Вклады</h2><span class="tot" id="tdep"></span></summary>
+    <div class="sect-body">
+      <div id="lst-deposits"></div>
+      <div class="actions"><button type="button" id="add-deposit">+ Добавить вклад</button></div>
+    </div>
+  </details>
+
+  <details class="card sect" id="sect-income" open>
+    <summary><h2>Доходы</h2><span class="tot" id="tinc"></span></summary>
+    <div class="sect-body">
+      <div id="lst-income"></div>
+      <div class="actions"><button type="button" id="add-income">+ Добавить доход</button></div>
+    </div>
+  </details>
+
+  <details class="card sect" id="sect-expense" open>
+    <summary><h2>Расходы</h2><span class="tot" id="texp"></span></summary>
+    <div class="sect-body">
+      <div id="lst-expense"></div>
+      <div class="actions"><button type="button" id="add-expense">+ Добавить расход</button></div>
+    </div>
+  </details>
+
+  <section class="card">
+    <h2>Как это считается</h2>
+    <ul class="notes">
+      <li>Остаток на счетах на конец месяца: остаток на начало плюс доходы минус расходы, платежи по кредитам, досрочные погашения, первоначальные взносы и пополнения вкладов. Ниже нуля это кассовый разрыв.</li>
+      <li>Суммы вводите «на руки», после налогов. Разовое событие (продажа квартиры, ремонт) это статья с повтором «один раз».</li>
+      <li>Платёж по кредиту аннуитетный: считается по сумме, ставке и сроку. В договоре он может отличаться из-за страховки и комиссий.</li>
+      <li>Досрочное погашение вносится в тот же месяц после обычного платежа. «Сократить срок»: платёж прежний, кредит закроется раньше. «Уменьшить платёж»: срок прежний, платёж станет меньше.</li>
+      <li>Вклад — отдельный счёт со своей ставкой. Проценты каждый месяц начисляются на остаток самого вклада (за вычетом налога, если он есть) и остаются на вкладе, а не попадают на основные счета. Пополнение вклада списывается с основных счетов как расход. Снятие с вклада пока не считается.</li>
+      <li>Категория у статьи расхода необязательна и нужна только для графика «Структура расходов»: без неё статьи группируются по своему названию.</li>
+      <li>«Факт» у статьи расхода: если для месяца указана фактическая сумма, в остатке на счетах и в графиках за этот месяц используется она вместо плановой. Карточка «Расходы» показывает общее расхождение факта с планом за все месяцы, где факт введён.</li>
+      <li>Данные лежат в файле <code>budget.db</code> рядом с программой и никуда не отправляются. Это расчёт, а не финансовая консультация.</li>
+    </ul>
+  </section>
+</main>
+<script src="/calc.js"></script>
+<script src="/app.js"></script>
+</body>
+</html>
