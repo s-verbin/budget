@@ -3,6 +3,7 @@
 
 Запуск: python3 server.py [порт]   (по умолчанию 8765, слушает только 127.0.0.1)
 База лежит рядом: budget.db. Внешних зависимостей нет.
+BUDGET_HOST меняет адрес прослушивания (нужно только в контейнере — см. Dockerfile).
 
 Демо-режим (BUDGET_DEMO=1) на диск вообще ничего не пишет: у каждого посетителя
 (анонимная cookie-сессия, без входа) своя база в оперативной памяти процесса —
@@ -491,16 +492,21 @@ def _default(table, field):
 
 def main():
     port = int(sys.argv[1]) if len(sys.argv) > 1 else DEFAULT_PORT
+    # По умолчанию только с этого же компьютера — см. README. BUDGET_HOST=0.0.0.0
+    # нужен лишь внутри контейнера (Docker публикует порт сам, см. Dockerfile);
+    # на голом хосте так делать не стоит — сервер тогда виден всей сети.
+    host = os.environ.get("BUDGET_HOST") or "127.0.0.1"
     if not DEMO_MODE:
         init_db()
     try:
-        httpd = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+        httpd = ThreadingHTTPServer((host, port), Handler)
     except OSError as e:
         sys.exit(f"Не удалось занять порт {port}: {e.strerror}. Укажите другой: python3 server.py {port + 1}")
+    shown_host = "127.0.0.1" if host in ("0.0.0.0", "::") else host
     if DEMO_MODE:
-        print(f"Бюджет (демо): http://127.0.0.1:{port}  — ничего не пишет на диск, остановить: Ctrl+C")
+        print(f"Бюджет (демо): http://{shown_host}:{port}  — ничего не пишет на диск, остановить: Ctrl+C")
     else:
-        print(f"Бюджет: http://127.0.0.1:{port}  (база: {DB_PATH.name}, остановить: Ctrl+C)")
+        print(f"Бюджет: http://{shown_host}:{port}  (база: {DB_PATH.name}, остановить: Ctrl+C)")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

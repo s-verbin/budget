@@ -1,0 +1,13 @@
+services:
+  budget:
+    build: .
+    # Образ из Docker Hub не публикуется — всегда собирается из исходников рядом.
+    ports:
+      # слева — порт на вашей машине, справа — порт в контейнере. Меняйте только левый.
+      - "127.0.0.1:8765:8765"
+    volumes:
+      - budget-data:/data
+    restart: unless-stopped
+
+volumes:
+  budget-data:
