@@ -3,14 +3,24 @@
 
 Запуск: python3 server.py [порт]   (по умолчанию 8765, слушает только 127.0.0.1)
 База лежит рядом: budget.db. Внешних зависимостей нет.
+
+Демо-режим (BUDGET_DEMO=1) на диск вообще ничего не пишет: у каждого посетителя
+(анонимная cookie-сессия, без входа) своя база в оперативной памяти процесса —
+общий кэш SQLite с именем на сессию, без журнала на диске. Она живёт, пока открыта
+вкладка и сервис не перезапускался; при простое дольше SESSION_IDLE_SECONDS или
+при перезапуске сервиса пропадает без следа. См. connect()/_touch_session().
 """
 import json
 import os
 import re
+import secrets
 import sqlite3
 import sys
+import threading
+import time
 from datetime import date
 from http import HTTPStatus
+from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
@@ -20,10 +30,11 @@ STATIC = ROOT / "static"
 DEFAULT_PORT = 8765
 DB_PATH = Path(os.environ.get("BUDGET_DB") or ROOT / "budget.db")
 
-# Публичная демо-версия (сайт): BUDGET_DEMO=1 показывает баннер «это песочница,
-# данные могут быть сброшены», BUDGET_REPO_URL — ссылку на исходники в подвале.
-# Ни то, ни другое не включено по умолчанию: локальный self-hosted запуск ничего
-# лишнего не показывает.
+# Публичная демо-версия (сайт): BUDGET_DEMO=1 включает cookie-сессии с базой
+# только в памяти (см. модульный docstring) и баннер «это песочница».
+# BUDGET_REPO_URL — ссылка на исходники в подвале страницы. Ни то, ни другое
+# не включено по умолчанию: локальный self-hosted запуск ничего лишнего не
+# показывает и всегда пишет в свой файл на диске.
 DEMO_MODE = os.environ.get("BUDGET_DEMO") == "1"
 REPO_URL = os.environ.get("BUDGET_REPO_URL") or ""
 
@@ -36,9 +47,9 @@ def inject_footer(html: bytes) -> bytes:
         else:
             call_to_action = "скачайте проект и запустите его у себя."
         pieces.append(
-            '<div id="demo-banner" role="note">Это публичная песочница: данные может увидеть или изменить '
-            "любой посетитель, и база периодически обнуляется. Для своего бюджета — "
-            + call_to_action + "</div>"
+            '<div id="demo-banner" role="note">Это публичная песочница: ничего не сохраняется на диск. '
+            "У вас своя память на время визита, она пропадает при простое или перезапуске сервиса, "
+            "и никто другой её не видит. Для своего бюджета — " + call_to_action + "</div>"
         )
     if REPO_URL:
         pieces.append('<footer id="repo-footer"><a href="%s" target="_blank" rel="noopener">Исходный код на GitHub</a></footer>' % REPO_URL)
@@ -188,24 +199,75 @@ SETTINGS_FIELDS = {
 }
 
 
-def connect():
-    con = sqlite3.connect(DB_PATH)
+def _apply_schema(con):
     con.row_factory = sqlite3.Row
-    con.execute("PRAGMA foreign_keys = ON")
-    return con
+    con.executescript(SCHEMA)
+    cols = {r["name"] for r in con.execute("PRAGMA table_info(items)")}
+    if "category" not in cols:
+        con.execute("ALTER TABLE items ADD COLUMN category TEXT NOT NULL DEFAULT ''")
+    today = date.today()
+    con.execute(
+        "INSERT OR IGNORE INTO settings (id, start) VALUES (1, ?)",
+        (f"{today.year:04d}-{today.month:02d}",),
+    )
+    con.commit()
 
 
 def init_db():
-    with connect() as con:
-        con.executescript(SCHEMA)
-        cols = {r["name"] for r in con.execute("PRAGMA table_info(items)")}
-        if "category" not in cols:
-            con.execute("ALTER TABLE items ADD COLUMN category TEXT NOT NULL DEFAULT ''")
-        today = date.today()
-        con.execute(
-            "INSERT OR IGNORE INTO settings (id, start) VALUES (1, ?)",
-            (f"{today.year:04d}-{today.month:02d}",),
-        )
+    con = sqlite3.connect(DB_PATH)
+    try:
+        _apply_schema(con)
+    finally:
+        con.close()
+
+
+# --- демо-сессии: in-memory база на посетителя, см. модульный docstring.
+SESSION_COOKIE = "budget_session"
+SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_-]{16,64}$")
+SESSION_IDLE_SECONDS = 2 * 60 * 60   # не трогали 2 часа — можно закрыть
+SESSION_MAX_COUNT = 1000             # защита от неограниченного роста памяти
+
+_sessions_lock = threading.Lock()
+_sessions = {}   # sid -> {"keeper": sqlite3.Connection, "last": float}
+
+
+def _demo_uri(sid):
+    # cache=shared: разные соединения с одним и тем же именем видят одну и ту же
+    # базу в памяти процесса, пока жив хотя бы «keeper»-коннект на эту сессию.
+    return "file:budget-demo-%s?mode=memory&cache=shared" % sid
+
+
+def _touch_session(sid):
+    now = time.time()
+    with _sessions_lock:
+        entry = _sessions.get(sid)
+        if entry is None:
+            keeper = sqlite3.connect(_demo_uri(sid), uri=True, check_same_thread=False)
+            _apply_schema(keeper)
+            entry = {"keeper": keeper, "last": now}
+            _sessions[sid] = entry
+        entry["last"] = now
+        _evict_locked(now)
+
+
+def _evict_locked(now):
+    stale = [s for s, e in _sessions.items() if now - e["last"] > SESSION_IDLE_SECONDS]
+    if len(_sessions) - len(stale) > SESSION_MAX_COUNT:
+        rest = sorted((s for s in _sessions if s not in stale), key=lambda s: _sessions[s]["last"])
+        stale += rest[: len(_sessions) - len(stale) - SESSION_MAX_COUNT]
+    for s in stale:
+        _sessions.pop(s)["keeper"].close()
+
+
+def connect(sid=None):
+    if sid is not None:
+        _touch_session(sid)
+        con = sqlite3.connect(_demo_uri(sid), uri=True)
+    else:
+        con = sqlite3.connect(DB_PATH)
+    con.row_factory = sqlite3.Row
+    con.execute("PRAGMA foreign_keys = ON")
+    return con
 
 
 def rows(con, table):
@@ -278,6 +340,29 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         sys.stderr.write("%s %s\n" % (self.command, self.path))
 
+    # --- cookie демо-сессии (см. модульный docstring); None вне демо-режима
+    def session_id(self):
+        if not DEMO_MODE:
+            return None
+        raw = self.headers.get("Cookie")
+        if raw:
+            jar = SimpleCookie()
+            try:
+                jar.load(raw)
+            except Exception:
+                jar = {}
+            morsel = jar.get(SESSION_COOKIE) if jar else None
+            if morsel and SESSION_ID_RE.match(morsel.value):
+                return morsel.value
+        sid = secrets.token_urlsafe(18)
+        self._new_session_cookie = sid
+        return sid
+
+    def _set_cookie_header(self):
+        sid = getattr(self, "_new_session_cookie", None)
+        if sid:
+            self.send_header("Set-Cookie", "%s=%s; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400" % (SESSION_COOKIE, sid))
+
     # --- ответы
     def send_json(self, payload, status=HTTPStatus.OK):
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -285,6 +370,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        self._set_cookie_header()
         self.end_headers()
         self.wfile.write(body)
 
@@ -310,12 +396,16 @@ class Handler(BaseHTTPRequestHandler):
         ctype = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
                  ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml"}.get(target.suffix, "application/octet-stream")
         body = target.read_bytes()
-        if rel == "index.html" and (REPO_URL or DEMO_MODE):
-            body = inject_footer(body)
+        if rel == "index.html":
+            if DEMO_MODE:
+                self.session_id()   # заводит cookie сессии уже на первой загрузке страницы
+            if REPO_URL or DEMO_MODE:
+                body = inject_footer(body)
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-cache")
+        self._set_cookie_header()
         self.end_headers()
         self.wfile.write(body)
 
@@ -327,14 +417,21 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_error_json(HTTPStatus.METHOD_NOT_ALLOWED, "только GET")
             return self.serve_static(path)
 
+        sid = self.session_id()
         parts = path[len("/api/"):].strip("/").split("/")
+        con = connect(sid)
         try:
-            with connect() as con:
-                return self.api(con, method, parts)
+            result = self.api(con, method, parts)
+            con.commit()
+            return result
         except (ValueError, TypeError) as e:
+            con.rollback()
             self.send_error_json(HTTPStatus.BAD_REQUEST, str(e))
         except sqlite3.IntegrityError as e:
+            con.rollback()
             self.send_error_json(HTTPStatus.BAD_REQUEST, "нарушено ограничение базы: " + str(e))
+        finally:
+            con.close()
 
     def api(self, con, method, parts):
         head = parts[0]
@@ -394,12 +491,16 @@ def _default(table, field):
 
 def main():
     port = int(sys.argv[1]) if len(sys.argv) > 1 else DEFAULT_PORT
-    init_db()
+    if not DEMO_MODE:
+        init_db()
     try:
         httpd = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     except OSError as e:
         sys.exit(f"Не удалось занять порт {port}: {e.strerror}. Укажите другой: python3 server.py {port + 1}")
-    print(f"Бюджет: http://127.0.0.1:{port}  (база: {DB_PATH.name}, остановить: Ctrl+C)")
+    if DEMO_MODE:
+        print(f"Бюджет (демо): http://127.0.0.1:{port}  — ничего не пишет на диск, остановить: Ctrl+C")
+    else:
+        print(f"Бюджет: http://127.0.0.1:{port}  (база: {DB_PATH.name}, остановить: Ctrl+C)")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
